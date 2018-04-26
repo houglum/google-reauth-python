@@ -102,25 +102,30 @@ class Oauth2WithReauthCredentials(client.OAuth2Credentials):
             self._do_refresh_request(http)
         else:
             self.store.acquire_lock()
+            refreshed_locally = False
             try:
                 new_cred = self.store.locked_get()
-
-                if (new_cred and not new_cred.invalid and
-                        new_cred.access_token != self.access_token and
-                        not new_cred.access_token_expired):
-                    _LOGGER.info('Updated access_token read from Storage')
-                    self._updateFromCredential(new_cred)
-                else:
-                    if (new_cred and not new_cred.invalid and
-                            getattr(new_cred, 'rapt_token', None)):
-                        # If the access token has expired, the RAPT may not have
-                        # expired yet. Try to refresh with the RAPT first, which
-                        # only forces users to answer reauth challenges if the
-                        # RAPT has expired, as opposed to every time the access
-                        # token expires.
+                if new_cred and not new_cred.invalid:
+                    # If we can update ourselves from the cached credential, do
+                    # so and avoid the HTTP refresh request.
+                    if (new_cred.access_token != self.access_token and
+                            not new_cred.access_token_expired):
+                        _LOGGER.info('Updated access_token read from Storage')
+                        self._updateFromCredential(new_cred)
+                        refreshed_locally = True
+                    # If the access token has expired, the cached RAPT may not
+                    # have expired yet. If we don't already have a RAPT stored
+                    # in this credential, try to reuse the cached RAPT for our
+                    # refresh request - reusing these until they expire only
+                    # forces users to answer reauth challenges if the RAPT has
+                    # expired, which occurs much less frequently than access
+                    # token expiration.
+                    if (getattr(new_cred, 'rapt_token', None) and
+                            not getattr(self, 'rapt_token', None)):
                         _LOGGER.info('Could not use access token from Storage, '
                                      'but still reusing the rapt_token.')
                         self.rapt_token = new_cred.rapt_token
+                if not refreshed_locally:
                     self._do_refresh_request(http)
             finally:
                 self.store.release_lock()
